@@ -1,22 +1,35 @@
 #!/bin/sh
 
+# Configuration
 STRIKE_API_URL="https://api.strike.me/v1"
 STRIKE_API_KEY="<your-strike-api-key>"
 
+is_uint() {
+    case "$1" in
+        ''|*[!0-9]*)
+            return 1
+        ;;
+        *)
+            return 0
+        ;;
+    esac
+}
+
+# Validate an invoice using Strike
 strike_check() {
     if [ "$#" -lt 2 ]; then
-        echo "error: there are not enough parameters" >&2
+        echo "error: not enough parameters" >&2
         return 1
     fi
     invoice_id="$1"
     expected_amount="$2"
 
+    # Fetch invoice details
     response=$(curl -s -H "Authorization: Bearer $STRIKE_API_KEY" \
                      -H "Accept: application/json" \
                      "$STRIKE_API_URL/invoices/$invoice_id")
-    
+
     invoice_amount=$(echo "$response" | jq -r '.amount.amount')
-    currency=$(echo "$response" | jq -r '.amount.currency')
     state=$(echo "$response" | jq -r '.state')
 
     if [ "$state" != "PAID" ]; then
@@ -25,7 +38,7 @@ strike_check() {
     fi
 
     if [ "$invoice_amount" != "$expected_amount" ]; then
-        echo "error: invoice amount does not match. Expected: $expected_amount, Actual: $invoice_amount" >&2
+        echo "error: invoice amount mismatch. Expected: $expected_amount, Actual: $invoice_amount" >&2
         return 1
     fi
 
@@ -33,31 +46,32 @@ strike_check() {
     return 0
 }
 
+# Pay an invoice using Strike
 strike_pay() {
     if [ "$#" -lt 1 ]; then
-        echo "error: there are not enough parameters" >&2
+        echo "error: not enough parameters" >&2
         return 1
     fi
     invoice="$1"
 
-    # Generate payment quote
-    response=$(curl -s -X POST "$STRIKE_API_URL/payment-quotes/lightning" \
-                     -H "Authorization: Bearer $STRIKE_API_KEY" \
-                     -H "Content-Type: application/json" \
-                     -d "{\"lnInvoice\": \"$invoice\", \"sourceCurrency\": \"BTC\"}")
+    # Step 1: Generate a payment quote
+    quote_response=$(curl -s -X POST "$STRIKE_API_URL/payment-quotes/lightning" \
+                         -H "Authorization: Bearer $STRIKE_API_KEY" \
+                         -H "Content-Type: application/json" \
+                         -d "{\"lnInvoice\": \"$invoice\", \"sourceCurrency\": \"BTC\"}")
 
-    payment_quote_id=$(echo "$response" | jq -r '.paymentQuoteId')
+    payment_quote_id=$(echo "$quote_response" | jq -r '.paymentQuoteId')
     if [ -z "$payment_quote_id" ]; then
         echo "error: failed to generate payment quote." >&2
         return 1
     fi
 
-    # Execute payment
+    # Step 2: Execute the payment quote
     execute_response=$(curl -s -X PATCH "$STRIKE_API_URL/payment-quotes/$payment_quote_id/execute" \
                               -H "Authorization: Bearer $STRIKE_API_KEY")
 
     if [ "$(echo "$execute_response" | jq -r '.state')" != "COMPLETED" ]; then
-        echo "error: failed to execute payment." >&2
+        echo "error: payment execution failed." >&2
         return 1
     fi
 
@@ -65,9 +79,10 @@ strike_pay() {
     return 0
 }
 
+# Generate an invoice using Strike
 strike_invoice() {
     if [ "$#" -lt 3 ]; then
-        echo "error: there are not enough parameters" >&2
+        echo "error: not enough parameters" >&2
         return 1
     fi
     amount="$1"
@@ -85,11 +100,15 @@ strike_invoice() {
         return 1
     fi
 
-    echo "Invoice created successfully. Invoice ID: $invoice_id"
+    echo "$invoice_id"
     return 0
 }
 
-# Main script logic
+# Main entry point
+if [ "$#" -lt 1 ]; then
+    echo "error: insert action" >&2
+    return 1
+fi
 action="$1"
 shift 1
 
@@ -104,7 +123,7 @@ case "$action" in
         strike_invoice "$@"
     ;;
     *)
-        echo "error: action $action not recognized" >&2
+        echo "error: action $action not available" >&2
         exit 1
     ;;
 esac
